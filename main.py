@@ -1,20 +1,33 @@
-# %%
 import os
 import cv2
 import numpy as np
 # import matplotlib.pyplot as plt
-from deepface.detectors import OpenCvWrapper, SsdWrapper
-from deepface.basemodels import Facenet, ArcFace
+import OpenCvWrapper, SsdWrapper
+import Facenet, ArcFace
+import Dlib
+from Threshold import findThreshold
 
 file_name = "encodings/database.npz"
 changed= False
+align = True
+metrix = "euclidean"
+# metrix = "cosine"
 
+detector_model = SsdWrapper.build_model()
+detector = SsdWrapper
 
-detector_model = OpenCvWrapper.build_model()
-detector = OpenCvWrapper
+# model = Dlib.loadModel()
+# input_shape = (150, 150)
 
-input_shape = (160, 160)
-model = Facenet.loadModel()
+model = ArcFace.loadModel()
+input_shape = (112, 112)
+
+# input_shape = (160, 160)
+# model = Facenet.loadModel()
+
+# threshold = findThreshold("Dlib", metrix)
+threshold = findThreshold("ArcFace", metrix)
+# threshold = findThreshold("Facenet", metrix)
 
 try:
     known_face_encodings, know_face_labels = np.load(file_name).values()
@@ -22,15 +35,20 @@ except IOError:
     known_face_encodings, know_face_labels = np.array([]), np.array([], str)
     changed = True
 
-
-def save_data():
-    np.savez(file_name, known_face_encodings, know_face_labels)
-
 def distance(encodings, encoding):
     if len(encodings) == 0:
         return np.empty(0)
 
-    return np.linalg.norm(encodings - encoding, axis=1)
+    if metrix == "euclidean":
+        return np.linalg.norm(encodings - encoding, axis=1)
+    else:
+        a1 = np.sum(np.multiply(encodings, encoding), axis=1)
+        b1 = np.sum(np.multiply(encodings, encodings), axis=1)
+        c1 = np.sum(np.multiply([encoding], [encoding]), axis=1)
+        return (1 - (a1 / (b1**.5 * c1**.5)))
+
+def save_data():
+    np.savez(file_name, known_face_encodings, know_face_labels)
 
 def preprocess(image, shape, normalize=True):
     image = cv2.resize(image, shape)
@@ -49,7 +67,7 @@ def add_image(path):
     if not np.isin(label, know_face_labels):
         print(f"Adding {label}...")
         image = cv2.imread(path)
-        faces = detector.detect_face(detector_model, image)
+        faces = detector.detect_face(detector_model, image, align=align)
         
         print(f"{len(faces)} faces detected")
         if len(faces) == 0:
@@ -83,7 +101,25 @@ if changed:
     save_data()
 
 
-# %%
+# def get_locations(img):
+#     faces = detector.detect_face(detector_model, img, False)
+#     locations = map(lambda x: x[1], faces)
+#     return list(locations)
+
+def encode(img):
+    faces = detector.detect_face(detector_model, img, align=False)
+    locations = map(lambda x: x[1], faces)
+    print("Face detected", len(faces))
+
+    encoded_faces = []
+    for face, _ in faces:
+        # face = img[y:y+h, x:x+w]
+        face = preprocess(face, input_shape)
+        encoded_faces.append(face)
+    if len(encoded_faces) == 0:
+        return [], []
+    return model.predict(np.array(encoded_faces)), list(locations)
+
 video_cap = cv2.VideoCapture(0)
 
 face_locations = []
@@ -96,37 +132,29 @@ while True:
     # break
 
     if process_this_frame:
-        faces = detector.detect_face(detector_model, frame.copy())
+        # face_locations = get_locations(frame)
+        face_encodings, face_locations = encode(frame.copy())
 
-        resize_faces = []
-        for face, location in faces:
-            face_locations.append(location)
-            image = preprocess(face, input_shape)
-            resize_faces.append(image)
-        resize_faces = np.array(resize_faces)
-
-        try:
-            face_encodings = model.predict(resize_faces)
-            print("predicted", len(face_encodings))
-        except Exception:
-            face_encodings = []
-
-        faces_names = []
-        for encoding in face_encodings:
-            dis = distance(known_face_encodings, encoding)
-            best_index = np.argmin(dis)
-
-            if dis[best_index] < 0.6:
-                name = f"{know_face_labels[best_index]}".capitalize()
+        face_names = []
+        for face_encoding in face_encodings:
+            # Or instead, use the known face with the smallest distance to the new face
+            face_distances = distance(known_face_encodings, face_encoding)
+            best_match_index = np.argmin(face_distances)
+            # if matches[best_match_index]:
+            print(face_distances[best_match_index], threshold)
+            if face_distances[best_match_index] < threshold:
+                name = f"{know_face_labels[best_match_index]}".capitalize()
+            else:
+                name = "unknown"
             face_names.append(name)
 
     process_this_frame = not process_this_frame
 
-
+    # print(face_locations, face_names)
     for (x, y, w, h), name in zip(face_locations, face_names):
         cv2.rectangle(frame, (x, y), (x+w, y+h), (67, 67, 67), 1)
-        cv2.putText(frame, name, (int(x+w/4),int(y+h/1.5)), 
-            cv2.FONT_HERSHEY_SIMPLEX, 4, (255, 255, 255), 2)
+        cv2.putText(frame, name, (int(x+w/4),int(y)), 
+            cv2.FONT_HERSHEY_DUPLEX, 1.0, (255, 0, 255), 1)
 
     cv2.imshow("Video", frame)
 
